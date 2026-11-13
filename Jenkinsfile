@@ -1,0 +1,126 @@
+pipeline {
+    agent any
+
+    // Triggered automatically by the GitHub webhook
+    triggers {
+        githubPush()
+    }
+
+    environment {
+        // ====== EDIT THESE 4 VALUES ======
+        DOCKERHUB_USER = 'YOUR_DOCKERHUB_USERNAME'
+        APP_SERVERS    = 'APP1_PUBLIC_IP APP2_PUBLIC_IP'
+        DB_HOST        = 'DB_PRIVATE_IP'
+        DB_PASSWORD    = 'LmsPass2026'
+        // =================================
+        IMAGE          = "${DOCKERHUB_USER}/lms-app"
+        TAG            = "${BUILD_NUMBER}"
+        DB_NAME        = 'lms_db'
+        DB_USER        = 'lms_user'
+        CONTAINER      = 'lms-app'
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('1. Source Code Management') {
+            steps {
+                checkout scm
+                sh 'git log -1 --pretty=format:"Commit %h by %an: %s"'
+            }
+        }
+
+        stage('2. Build Application') {
+            steps {
+                // Uses a throwaway Node container, so Node does not need to be installed on Jenkins
+                sh '''
+                  docker run --rm -u $(id -u):$(id -g) -e HOME=/tmp \
+                    -v "$WORKSPACE/app":/app -w /app node:20-alpine \
+                    sh -c "npm install && npm run build && npm test"
+                '''
+            }
+        }
+
+        stage('3. Docker Image Creation') {
+            steps {
+                sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest app'
+                sh 'docker images | grep lms-app | head -5'
+            }
+        }
+
+        stage('4. Docker Image Push') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                                  usernameVariable: 'DH_USER',
+                                                  passwordVariable: 'DH_PASS')]) {
+                    sh '''
+                      echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                      docker push $IMAGE:$TAG
+                      docker push $IMAGE:latest
+                    '''
+                }
+            }
+        }
+
+        stage('5. Application Deployment') {
+            steps {
+                script {
+                    for (ip in env.APP_SERVERS.split(' ')) {
+                        sh "ssh ubuntu@${ip} 'docker pull ${IMAGE}:${TAG}'"
+                    }
+                }
+            }
+        }
+
+        stage('6. Container Management') {
+            steps {
+                script {
+                    for (ip in env.APP_SERVERS.split(' ')) {
+                        sh """
+                          ssh ubuntu@${ip} '
+                            docker stop ${CONTAINER} || true
+                            docker rm ${CONTAINER} || true
+                            docker run -d --name ${CONTAINER} --restart always \
+                              -p 127.0.0.1:3000:3000 \
+                              -e DB_HOST=${DB_HOST} -e DB_PORT=5432 \
+                              -e DB_NAME=${DB_NAME} -e DB_USER=${DB_USER} -e DB_PASSWORD=${DB_PASSWORD} \
+                              -e APP_VERSION=jenkins-build-${TAG} \
+                              ${IMAGE}:${TAG}
+                            docker image prune -f
+                          '
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('7. Deployment Verification') {
+            steps {
+                script {
+                    sleep 8
+                    for (ip in env.APP_SERVERS.split(' ')) {
+                        sh "ssh ubuntu@${ip} 'docker ps --filter name=${CONTAINER} --format \"{{.Names}} {{.Image}} {{.Status}}\"'"
+                        sh "curl -sf http://${ip}/health | tee /dev/stderr | grep -q '\"db\":\"connected\"'"
+                        sh "curl -sf http://${ip}/health | grep -q 'jenkins-build-${TAG}'"
+                        echo "Server ${ip} is running build ${TAG} and connected to PostgreSQL"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker logout || true'
+        }
+        success {
+            echo "Deployment of ${IMAGE}:${TAG} succeeded on: ${APP_SERVERS}"
+        }
+        failure {
+            echo 'Pipeline failed - check the stage logs above.'
+        }
+    }
+}
