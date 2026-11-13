@@ -9,8 +9,8 @@ pipeline {
     environment {
         // ====== EDIT THESE 4 VALUES ======
         DOCKERHUB_USER = 'YOUR_DOCKERHUB_USERNAME'
-        APP_SERVERS    = 'APP1_PUBLIC_IP APP2_PUBLIC_IP'
-        DB_HOST        = 'DB_PRIVATE_IP'
+        APP_SERVERS    = '100.52.175.84 54.211.25.20'
+        DB_HOST        = '18.209.214.243'
         DB_PASSWORD    = 'LmsPass2026'
         // =================================
         IMAGE          = "${DOCKERHUB_USER}/lms-app"
