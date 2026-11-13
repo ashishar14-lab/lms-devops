@@ -1,0 +1,67 @@
+---
+- name: Install and configure PostgreSQL on the Database Server
+  hosts: db
+  become: true
+  tasks:
+    - name: Install PostgreSQL
+      ansible.builtin.apt:
+        name: [postgresql, postgresql-contrib, acl]
+        state: present
+        update_cache: true
+
+    - name: Detect PostgreSQL version directory
+      ansible.builtin.shell: ls /etc/postgresql | sort -V | tail -1
+      register: pg_ver
+      changed_when: false
+
+    - name: Listen on all interfaces
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_ver.stdout }}/main/postgresql.conf"
+        regexp: "^#?listen_addresses"
+        line: "listen_addresses = '*'"
+      notify: Restart PostgreSQL
+
+    - name: Allow app servers (VPC CIDR) to connect with password
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ pg_ver.stdout }}/main/pg_hba.conf"
+        line: "host    {{ db_name }}    {{ db_user }}    {{ vpc_cidr }}    scram-sha-256"
+      notify: Restart PostgreSQL
+
+    - name: Ensure PostgreSQL is running and enabled
+      ansible.builtin.service:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Create database user
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='{{ db_user }}'" | grep -q 1 \
+          || runuser -u postgres -- psql -c "CREATE USER {{ db_user }} WITH PASSWORD '{{ db_password }}';"
+      args:
+        chdir: /tmp
+
+    - name: Create database owned by the user
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='{{ db_name }}'" | grep -q 1 \
+          || runuser -u postgres -- psql -c "CREATE DATABASE {{ db_name }} OWNER {{ db_user }};"
+      args:
+        chdir: /tmp
+
+  handlers:
+    - name: Restart PostgreSQL
+      ansible.builtin.service:
+        name: postgresql
+        state: restarted
+
+- name: Verify PostgreSQL is listening
+  hosts: db
+  become: true
+  tasks:
+    - name: Check port 5432
+      ansible.builtin.shell: ss -lntp | grep 5432
+      register: pg_port
+      changed_when: false
+
+    - name: Show listener
+      ansible.builtin.debug:
+        var: pg_port.stdout_lines

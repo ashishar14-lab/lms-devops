@@ -1,0 +1,66 @@
+---
+- name: Build and deploy the Learning Management Platform container
+  hosts: app
+  become: true
+  tasks:
+    - name: Copy application source to the server
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../app/"
+        dest: "{{ app_src_dir }}/"
+        mode: preserve
+
+    - name: Build Docker image
+      ansible.builtin.command: docker build -t {{ image_name }}:latest {{ app_src_dir }}
+      changed_when: true
+
+    - name: Stop and remove old container (if any)
+      ansible.builtin.shell: docker rm -f {{ container_name }} || true
+      changed_when: true
+
+    - name: Run application container connected to PostgreSQL
+      ansible.builtin.command: >
+        docker run -d --name {{ container_name }} --restart always
+        -p 127.0.0.1:{{ app_port }}:3000
+        -e DB_HOST={{ db_private_ip }}
+        -e DB_PORT=5432
+        -e DB_NAME={{ db_name }}
+        -e DB_USER={{ db_user }}
+        -e DB_PASSWORD={{ db_password }}
+        -e APP_VERSION=ansible-initial
+        {{ image_name }}:latest
+      changed_when: true
+
+    - name: Wait for app through Nginx (port 80)
+      ansible.builtin.uri:
+        url: http://localhost/health
+        return_content: true
+      register: health
+      retries: 10
+      delay: 3
+      until: health.status == 200
+
+    - name: Show health result
+      ansible.builtin.debug:
+        var: health.json
+
+- name: Test App -> DB connectivity
+  hosts: app
+  become: true
+  tasks:
+    - name: Check PostgreSQL port from app server
+      ansible.builtin.command: nc -zv {{ db_private_ip }} 5432
+      register: nc_out
+      changed_when: false
+
+    - name: Run a query from app server using psql
+      ansible.builtin.shell: >
+        PGPASSWORD='{{ db_password }}' psql -h {{ db_private_ip }} -U {{ db_user }} -d {{ db_name }}
+        -c "SELECT current_database(), current_user, inet_server_addr();"
+      register: psql_out
+      changed_when: false
+
+    - name: Show results
+      ansible.builtin.debug:
+        msg:
+          - "{{ nc_out.stderr }}"
+          - "{{ psql_out.stdout_lines }}"

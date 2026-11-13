@@ -1,0 +1,58 @@
+---
+- name: Configure Web/Application Servers (Docker + Nginx reverse proxy)
+  hosts: app
+  become: true
+  tasks:
+    - name: Install Docker, Nginx and PostgreSQL client
+      ansible.builtin.apt:
+        name: [docker.io, nginx, postgresql-client, netcat-openbsd, curl]
+        state: present
+        update_cache: true
+
+    - name: Start and enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Allow ubuntu user to run docker (used by Jenkins over SSH)
+      ansible.builtin.user:
+        name: ubuntu
+        groups: docker
+        append: true
+
+    - name: Deploy Nginx reverse proxy config
+      ansible.builtin.template:
+        src: templates/lms-nginx.conf.j2
+        dest: /etc/nginx/sites-available/lms
+        mode: "0644"
+      notify: Reload Nginx
+
+    - name: Enable LMS site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/lms
+        dest: /etc/nginx/sites-enabled/lms
+        state: link
+      notify: Reload Nginx
+
+    - name: Disable default site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    - name: Validate Nginx config
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Start and enable Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded

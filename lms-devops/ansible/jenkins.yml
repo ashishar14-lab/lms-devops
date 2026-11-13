@@ -1,0 +1,91 @@
+---
+- name: Install and configure Jenkins on the Management Server
+  hosts: localhost
+  connection: local
+  become: true
+  tasks:
+    - name: Install Java, Git, Docker and prerequisites
+      ansible.builtin.apt:
+        name: [fontconfig, openjdk-21-jre, git, docker.io, curl, gnupg]
+        state: present
+        update_cache: true
+
+    - name: Add Jenkins repository signing key (2026 key)
+      ansible.builtin.get_url:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+        dest: /usr/share/keyrings/jenkins-keyring.asc
+        mode: "0644"
+
+    - name: Add Jenkins LTS apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+        filename: jenkins
+        state: present
+
+    - name: Install Jenkins
+      ansible.builtin.apt:
+        name: jenkins
+        state: present
+        update_cache: true
+
+    - name: Start and enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add jenkins user to docker group
+      ansible.builtin.user:
+        name: jenkins
+        groups: docker
+        append: true
+
+    - name: Create jenkins .ssh directory
+      ansible.builtin.file:
+        path: /var/lib/jenkins/.ssh
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: "0700"
+
+    - name: Give Jenkins the same SSH key used for the app servers
+      ansible.builtin.copy:
+        src: /home/ubuntu/.ssh/id_rsa
+        dest: /var/lib/jenkins/.ssh/id_rsa
+        remote_src: true
+        owner: jenkins
+        group: jenkins
+        mode: "0600"
+
+    - name: Disable strict host key checking for jenkins user
+      ansible.builtin.copy:
+        dest: /var/lib/jenkins/.ssh/config
+        content: |
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+        owner: jenkins
+        group: jenkins
+        mode: "0600"
+
+    - name: Restart Jenkins (picks up docker group)
+      ansible.builtin.service:
+        name: jenkins
+        state: restarted
+        enabled: true
+
+    - name: Wait for initial admin password
+      ansible.builtin.wait_for:
+        path: /var/lib/jenkins/secrets/initialAdminPassword
+        timeout: 180
+
+    - name: Read initial admin password
+      ansible.builtin.slurp:
+        src: /var/lib/jenkins/secrets/initialAdminPassword
+      register: jpass
+
+    - name: Show Jenkins URL and password
+      ansible.builtin.debug:
+        msg:
+          - "Jenkins URL: http://<MANAGEMENT_SERVER_PUBLIC_IP>:8080"
+          - "Initial admin password: {{ jpass.content | b64decode | trim }}"

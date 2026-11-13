@@ -1,0 +1,12 @@
+---
+# Database settings for the Learning Management Platform
+db_name: lms_db
+db_user: lms_user
+db_password: LmsPass2026
+vpc_cidr: 10.0.0.0/16
+
+# Application settings
+app_port: 3000
+container_name: lms-app
+image_name: lms-app
+app_src_dir: /opt/lms-app
